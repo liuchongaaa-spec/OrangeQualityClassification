@@ -1,69 +1,123 @@
 import json
+import random
 from pathlib import Path
-from typing import Tuple
+from typing import List, Tuple
 
-from torch.utils.data import DataLoader
-from torchvision import datasets, transforms
-
-
-IMAGENET_MEAN = [0.485, 0.456, 0.406]
-IMAGENET_STD = [0.229, 0.224, 0.225]
+from PIL import Image
+from torch.utils.data import Dataset, DataLoader
+from torchvision import transforms
 
 
-def build_transforms(train: bool = True, input_size: int = 224) -> transforms.Compose:
-    if train:
-        aug = [
-            transforms.RandomResizedCrop(input_size),
-            transforms.RandomHorizontalFlip(),
-            transforms.RandomRotation(15),
-            transforms.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1),
-            transforms.ToTensor(),
-            transforms.RandomErasing(p=0.25),
-        ]
-    else:
-        aug = [
-            transforms.Resize(int(input_size * 1.14)),
-            transforms.CenterCrop(input_size),
-            transforms.ToTensor(),
-        ]
-    return transforms.Compose(aug)
+class OrangeDataset(Dataset):
+    def __init__(self, image_paths: List[Path], labels: List[int], transform=None):
+        self.image_paths = image_paths
+        self.labels = labels
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.image_paths)
+
+    def __getitem__(self, idx):
+        img_path = self.image_paths[idx]
+        label = self.labels[idx]
+
+        img = Image.open(img_path).convert("RGB")
+
+        if self.transform:
+            img = self.transform(img)
+
+        return img, label
 
 
-def save_class_indices(dataset: datasets.ImageFolder, output_dir: Path) -> Path:
-    idx_to_class = {v: k for k, v in dataset.class_to_idx.items()}
-    output_dir.mkdir(parents=True, exist_ok=True)
-    json_path = output_dir / "class_indices.json"
-    with json_path.open("w", encoding="utf-8") as f:
-        json.dump(idx_to_class, f, ensure_ascii=False, indent=2)
-    return json_path
+def save_class_indices(class_names: List[str], save_path="class_indices.json"):
+    index_dict = {str(i): name for i, name in enumerate(class_names)}
+    with open(save_path, "w", encoding="utf-8") as f:
+        json.dump(index_dict, f, indent=4)
+    print(f"class_indices.json saved: {index_dict}")
 
+
+def split_dataset(data_root: Path, val_rate=0.2):
+
+    assert data_root.exists(), f"{data_root} not found."
+
+    # 自动读取类别目录
+    class_names = sorted([d.name for d in data_root.iterdir() if d.is_dir()])
+    print(f"Detected classes: {class_names}")
+
+    # 自动保存 class_indices.json（与之前项目一致）
+    save_class_indices(class_names)
+
+    train_paths, val_paths = [], []
+    train_labels, val_labels = [], []
+
+    for class_idx, class_name in enumerate(class_names):
+        class_dir = data_root / class_name
+
+        image_files = sorted([
+            p for p in class_dir.iterdir()
+            if p.suffix.lower() in [".jpg", ".png", ".jpeg"]
+        ])
+
+        random.seed(0)
+        val_count = int(len(image_files) * val_rate)
+        val_samples = set(random.sample(image_files, val_count))
+
+        for img_path in image_files:
+            if img_path in val_samples:
+                val_paths.append(img_path)
+                val_labels.append(class_idx)
+            else:
+                train_paths.append(img_path)
+                train_labels.append(class_idx)
+
+    return train_paths, train_labels, val_paths, val_labels, len(class_names)
 
 def create_dataloaders(
-    data_root: Path,
-    batch_size: int = 32,
-    num_workers: int = 4,
-    input_size: int = 224,
-) -> Tuple[DataLoader, DataLoader, int]:
-    train_dir = data_root / "train"
-    val_dir = data_root / "val"
-    train_set = datasets.ImageFolder(train_dir, transform=build_transforms(train=True, input_size=input_size))
-    val_set = datasets.ImageFolder(val_dir, transform=build_transforms(train=False, input_size=input_size))
+    data_root: str,
+    batch_size: int,
+    num_workers: int,
+    input_size: int,
+    pin_memory=True,
+):
+    data_root = Path(data_root)
 
-    class_map_path = save_class_indices(train_set, data_root)
-    print(f"Saved class indices to {class_map_path}")
+    train_paths, train_labels, val_paths, val_labels, num_classes = split_dataset(
+        data_root, val_rate=0.2
+    )
+
+    # 数据增强（与当前使用版本一致）
+    train_transform = transforms.Compose([
+        transforms.RandomResizedCrop(input_size),
+        transforms.RandomHorizontalFlip(),
+        transforms.RandomRotation(15),
+        transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
+        transforms.ToTensor(),
+        transforms.RandomErasing(p=0.25),
+    ])
+
+    val_transform = transforms.Compose([
+        transforms.Resize(int(input_size * 1.14)),
+        transforms.CenterCrop(input_size),
+        transforms.ToTensor(),
+    ])
+
+    train_dataset = OrangeDataset(train_paths, train_labels, transform=train_transform)
+    val_dataset = OrangeDataset(val_paths, val_labels, transform=val_transform)
 
     train_loader = DataLoader(
-        train_set,
+        train_dataset,
         batch_size=batch_size,
         shuffle=True,
         num_workers=num_workers,
-        pin_memory=True,
+        pin_memory=pin_memory
     )
+
     val_loader = DataLoader(
-        val_set,
+        val_dataset,
         batch_size=batch_size,
         shuffle=False,
         num_workers=num_workers,
-        pin_memory=True,
+        pin_memory=pin_memory
     )
-    return train_loader, val_loader, len(train_set.classes)
+
+    return train_loader, val_loader, num_classes

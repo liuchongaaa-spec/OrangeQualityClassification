@@ -1,15 +1,33 @@
+from __future__ import annotations
+
 import torch
 import torch.nn as nn
 from torchvision import models
 
+__all__ = [
+    "NormalizeLayer",
+    "EfficientNetBackbone",
+    "ChannelAttention",
+    "SpatialAttention",
+    "CBAM",
+    "OrangeNetV1",
+]
 
-__all__ = ["EfficientNetBackbone", "CBAM", "OrangeNetV1"]
+class NormalizeLayer(nn.Module):
 
+    def __init__(self) -> None:
+        super().__init__()
+        mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
+        std = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)
+        self.register_buffer("mean", mean)
+        self.register_buffer("std", std)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return (x - self.mean) / self.std
 
 class EfficientNetBackbone(nn.Module):
-    """EfficientNet-B0 backbone returning convolutional features only."""
 
-    def __init__(self, backbone_name: str = "efficientnet_b0", pretrained: bool = True):
+    def __init__(self, backbone_name: str = "efficientnet_b0", pretrained: bool = True) -> None:
         super().__init__()
         if backbone_name != "efficientnet_b0":
             raise ValueError(f"Unsupported backbone: {backbone_name}")
@@ -27,7 +45,7 @@ class EfficientNetBackbone(nn.Module):
 
 
 class ChannelAttention(nn.Module):
-    def __init__(self, channels: int, reduction: int = 16):
+    def __init__(self, channels: int, reduction: int = 16) -> None:
         super().__init__()
         reduced = max(1, channels // reduction)
         self.mlp = nn.Sequential(
@@ -49,7 +67,7 @@ class ChannelAttention(nn.Module):
 
 
 class SpatialAttention(nn.Module):
-    def __init__(self, kernel_size: int = 7):
+    def __init__(self, kernel_size: int = 7) -> None:
         super().__init__()
         padding = kernel_size // 2
         self.conv = nn.Conv2d(2, 1, kernel_size=kernel_size, padding=padding, bias=False)
@@ -64,9 +82,8 @@ class SpatialAttention(nn.Module):
 
 
 class CBAM(nn.Module):
-    """Convolutional Block Attention Module (channel + spatial)."""
 
-    def __init__(self, channels: int, reduction: int = 16):
+    def __init__(self, channels: int, reduction: int = 16) -> None:
         super().__init__()
         self.channel_attention = ChannelAttention(channels, reduction)
         self.spatial_attention = SpatialAttention()
@@ -76,7 +93,6 @@ class CBAM(nn.Module):
         out = self.spatial_attention(out)
         return out
 
-
 class OrangeNetV1(nn.Module):
     def __init__(
         self,
@@ -85,13 +101,16 @@ class OrangeNetV1(nn.Module):
         cbam_reduction_ratio: int = 16,
         backbone_name: str = "efficientnet_b0",
         use_mid_fc: bool = False,
-    ):
+    ) -> None:
         super().__init__()
         self.normalize = NormalizeLayer()
         self.backbone = EfficientNetBackbone(backbone_name=backbone_name, pretrained=True)
+
+        # 保持你原有的 feature_dim 推断方式
         sample_input = torch.zeros(1, 3, 224, 224)
         with torch.no_grad():
             feature_dim = self.backbone(sample_input).shape[1]
+
         self.cbam = CBAM(feature_dim, reduction=cbam_reduction_ratio)
         self.pool = nn.AdaptiveAvgPool2d(1)
         self.dropout = nn.Dropout(p=dropout_rate)
@@ -116,17 +135,3 @@ class OrangeNetV1(nn.Module):
         pooled = self.dropout(pooled)
         logits = self.classifier(pooled)
         return logits
-
-
-class NormalizeLayer(nn.Module):
-    """Applies ImageNet normalization inside the model for convenience."""
-
-    def __init__(self):
-        super().__init__()
-        mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
-        std = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)
-        self.register_buffer("mean", mean)
-        self.register_buffer("std", std)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return (x - self.mean) / self.std
